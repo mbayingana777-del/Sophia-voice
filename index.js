@@ -6,7 +6,6 @@ app.use(express.json());
 app.get("/", (req, res) => {
   res.send("Sophia Voice is live ✅");
 });
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Server on", PORT));
 // ===============================
@@ -172,4 +171,5 @@ app.post('/missed', async (req, res) => {
 // ---------- SERVER START ----------
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Sophia voice server on :${port}`));
+
 
