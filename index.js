@@ -37,6 +37,13 @@ const postSheets = async (payload) => {
 const logError = (body) =>
   postSheets({ timestamp: new Date().toISOString(), channel: "ERROR", from: "system", body });
 
+const tonePrompt = () => {
+  const t = String(process.env.SOPHIA_TONE || "classic").toLowerCase();
+  if (t === "luxe") return "You are Sophia Luxe: elegant, calm, premium tone. Polished and reassuring.";
+  if (t === "hustle") return "You are Sophia Hustle: upbeat, energetic, friendly, action-oriented.";
+  return "You are Sophia Classic: warm, professional, concise, helpful.";
+};
+
 app.get("/status", async (req, res) => {
   const status = { server: "OK", openai: "DOWN", sheets: "DOWN" };
   try { await openai.models.list(); status.openai = "OK"; } catch {}
@@ -61,7 +68,7 @@ app.get("/test-owner-alert", async (req, res) => {
 
 app.post("/sms", async (req, res) => {
   const from = req.body.From || "Unknown";
-  const body = req.body.Body || "";
+  const body = (req.body.Body || "").trim();
   fs.appendFileSync(LEADS_CSV, `${new Date().toISOString()},SMS,${from},"${body.replace(/"/g,"'")}"\n`);
   postSheets({ timestamp: new Date().toISOString(), channel: "SMS", from, body });
 
@@ -72,20 +79,23 @@ app.post("/sms", async (req, res) => {
         to: process.env.OWNER_PHONE,
         body: `New SMS from ${from}: ${body}`,
       });
-    } catch (e) {
-      logError(`Owner alert SMS failed: ${e.message || e}`);
-    }
+    } catch (e) { logError(`Owner alert SMS failed: ${e.message || e}`); }
   }
 
+  const wantsBooking = /\b(book|schedule|appointment|tour|showing|see (it|the (house|home|property)))\b/i.test(body);
   let reply = "Thanks for your message.";
   try {
+    const base = tonePrompt();
+    const hint = wantsBooking && process.env.BOOKING_LINK ? ` If they want to schedule, include this link once: ${process.env.BOOKING_LINK}` : "";
     const completion = await openai.responses.create({
       model: "gpt-4o-mini",
-      input: `You are Sophia, a friendly, professional AI receptionist. Reply briefly and naturally to: "${body}"`,
+      input: `${base}${hint}\nUser: ${body}\nAssistant:`,
     });
     reply = completion.output?.[0]?.content?.[0]?.text?.trim() || reply;
-  } catch (e) {
-    logError(`OpenAI error: ${e.message || e}`);
+  } catch (e) { logError(`OpenAI error: ${e.message || e}`); }
+
+  if (wantsBooking && process.env.BOOKING_LINK && !reply.includes(process.env.BOOKING_LINK)) {
+    reply += `\n${process.env.BOOKING_LINK}`;
   }
 
   const twiml = new MessagingResponse();
@@ -96,7 +106,6 @@ app.post("/sms", async (req, res) => {
 app.post("/voice", async (req, res) => {
   const from = req.body.From || "Unknown";
   postSheets({ timestamp: new Date().toISOString(), channel: "VOICE", from, body: "Call started" });
-
   if (process.env.OWNER_PHONE && process.env.TWILIO_NUMBER) {
     try {
       await client.messages.create({
@@ -104,20 +113,15 @@ app.post("/voice", async (req, res) => {
         to: process.env.OWNER_PHONE,
         body: `Incoming call from ${from}`,
       });
-    } catch (e) {
-      logError(`Owner alert for call failed: ${e.message || e}`);
-    }
+    } catch (e) { logError(`Owner alert for call failed: ${e.message || e}`); }
   }
-
   const twiml = new VoiceResponse();
   twiml.say("Hello, this is Sophia Voice AI. How can I help you today?");
   res.type("text/xml").send(twiml.toString());
 });
 
 if (process.env.PUBLIC_URL) {
-  setInterval(() => {
-    fetch(process.env.PUBLIC_URL).catch(() => {});
-  }, 5 * 60 * 1000);
+  setInterval(() => { fetch(process.env.PUBLIC_URL).catch(() => {}); }, 5 * 60 * 1000);
 }
 
 const PORT = process.env.PORT || 3000;
