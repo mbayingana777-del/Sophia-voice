@@ -9,7 +9,7 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-app.get("/", (req, res) => { res.status(200).send("Sophia Voice is live"); });
+app.get("/", (req, res) => res.status(200).send("Sophia Voice is live"));
 
 const LEADS_CSV = path.join(__dirname, "leads.csv");
 if (!fs.existsSync(LEADS_CSV)) fs.writeFileSync(LEADS_CSV, "timestamp,channel,from,body\n");
@@ -29,9 +29,7 @@ const logToSheets = async (payload) => {
       body: JSON.stringify(payload),
     });
     await r.text();
-  } catch (e) {
-    console.error("Sheets error:", e.message);
-  }
+  } catch {}
 };
 
 app.get("/test-sheets", async (req, res) => {
@@ -68,3 +66,8 @@ if (process.env.PUBLIC_URL) {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Server running on port", PORT));
+
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("Server running on port", PORT));
+
