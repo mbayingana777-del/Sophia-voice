@@ -1,53 +1,23 @@
-// ===============================
-// Sophia Voice + SMS Receptionist
-// ===============================
-
-// --- Import dependencies ---
-import express from "express";
-import dotenv from "dotenv";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import twilio from "twilio";
-import OpenAI from "openai";
-
-// --- Setup ---
-dotenv.config();
+// Minimal Express app for Render (CommonJS version)
+const express = require("express");
 const app = express();
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
-// --- Middleware ---
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// --- Health check route (prevents “Cannot GET /”) ---
+// Health/homepage route (fixes "Cannot GET /")
 app.get("/", (req, res) => {
-  res.send("Sophia Voice is live ✅");
+  res.status(200).send("Sophia Voice is live ✅");
 });
 
-// --- CSV Logging Setup ---
-const LEADS_CSV = path.join(__dirname, "leads.csv");
-if (!fs.existsSync(LEADS_CSV)) {
-  fs.writeFileSync(LEADS_CSV, "timestamp,channel,from,body\n");
-}
-
-// --- Twilio Setup ---
-const { TWILIO_SID, TWILIO_AUTH } = process.env;
-const client = twilio(TWILIO_SID, TWILIO_AUTH);
-const { VoiceResponse } = twilio.twiml;
-
-// --- OpenAI Setup ---
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+// Twilio webhooks (optional stubs; safe to keep)
+app.post("/sms", (req, res) => {
+  return res.type("text/xml").send(`<Response><Message>Hi, this is Sophia AI. Thanks for messaging!</Message></Response>`);
+});
+app.post("/voice", (req, res) => {
+  return res.type("text/xml").send(`<Response><Say>Hello! This is Sophia Voice AI. How can I help you?</Say></Response>`);
 });
 
-// --- SMS Route ---
-app.post("/sms", async (req, res) => {
-  const from = req.body.From || "Unknown";
-  const body = req.body.Body || "";
-
-  // Log to CSV
-  fs.appendFileSync(
-    LEADS_CSV,
-    `${new Date().toISOString()},SMS,${from},"
+// Listen on Render's port
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("Server running on port", PORT));
