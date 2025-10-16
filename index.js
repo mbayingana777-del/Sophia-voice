@@ -19,34 +19,36 @@ const client = twilio(TWILIO_SID, TWILIO_AUTH);
 const { MessagingResponse, VoiceResponse } = twilio.twiml;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const logToSheets = async (payload) => {
+const postSheets = async (payload) => {
   const url = process.env.SHEETS_WEBAPP_URL;
-  if (!url) return;
+  if (!url) return { ok:false, status:0, text:"missing SHEETS_WEBAPP_URL" };
   try {
     const r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    await r.text();
-  } catch {}
+    const txt = await r.text();
+    return { ok:r.ok, status:r.status, text:txt };
+  } catch (e) {
+    return { ok:false, status:0, text:String(e.message||e) };
+  }
 };
 
 app.get("/test-sheets", async (req, res) => {
-  await logToSheets({
-    timestamp: new Date().toISOString(),
-    channel: "TEST",
-    from: "manual",
-    body: "hello from /test-sheets"
-  });
-  res.send("OK");
+  const r = await postSheets({ timestamp:new Date().toISOString(), channel:"TEST", from:"manual", body:"hello from /test-sheets" });
+  res.status(r.ok?200:500).send(`${r.status} ${r.text}`.slice(0,200));
+});
+
+app.get("/env-check", (req, res) => {
+  res.send(process.env.SHEETS_WEBAPP_URL ? "env ok" : "env missing");
 });
 
 app.post("/sms", async (req, res) => {
   const from = req.body.From || "Unknown";
   const body = req.body.Body || "";
   fs.appendFileSync(LEADS_CSV, `${new Date().toISOString()},SMS,${from},"${body.replace(/"/g,"'")}"\n`);
-  logToSheets({ timestamp: new Date().toISOString(), channel: "SMS", from, body });
+  postSheets({ timestamp:new Date().toISOString(), channel:"SMS", from, body });
   const twiml = new MessagingResponse();
   twiml.message("Thanks for messaging.");
   res.type("text/xml").send(twiml.toString());
@@ -54,7 +56,7 @@ app.post("/sms", async (req, res) => {
 
 app.post("/voice", async (req, res) => {
   const from = req.body.From || "Unknown";
-  logToSheets({ timestamp: new Date().toISOString(), channel: "VOICE", from, body: "Call started" });
+  postSheets({ timestamp:new Date().toISOString(), channel:"VOICE", from, body:"Call started" });
   const twiml = new VoiceResponse();
   twiml.say("Hello. This is Sophia Voice AI. How can I help you?");
   res.type("text/xml").send(twiml.toString());
@@ -67,7 +69,7 @@ if (process.env.PUBLIC_URL) {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Server running on port", PORT));
 
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Server running on port", PORT));
+
 
