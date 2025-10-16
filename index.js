@@ -32,11 +32,26 @@ const postSheets = async (payload) => {
 
 app.post("/sms", async (req, res) => {
   const from = req.body.From || "Unknown";
-  const body = req.body.Body || "";
-  fs.appendFileSync(LEADS_CSV, `${new Date().toISOString()},SMS,${from},"${body.replace(/"/g,"'")}"\n`);
-  postSheets({ timestamp:new Date().toISOString(), channel:"SMS", from, body });
+  const userMsg = req.body.Body || "";
+  fs.appendFileSync(LEADS_CSV, `${new Date().toISOString()},SMS,${from},"${userMsg.replace(/"/g,"'")}"\n`);
+  postSheets({ timestamp:new Date().toISOString(), channel:"SMS", from, body:userMsg });
+
+  let reply = "Thanks for messaging.";
+  try {
+    const r = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "You are Sophia, a friendly receptionist. Be concise and helpful." },
+        { role: "user", content: userMsg }
+      ],
+      max_tokens: 120,
+      temperature: 0.4
+    });
+    reply = (r.choices?.[0]?.message?.content || "").trim() || reply;
+  } catch {}
+
   const twiml = new MessagingResponse();
-  twiml.message("Thanks for messaging.");
+  twiml.message(reply);
   res.type("text/xml").send(twiml.toString());
 });
 
