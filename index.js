@@ -9,67 +9,66 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-app.get("/", (req, res) => res.status(200).send("Sophia Voice is live"));
+// Homepage
+app.get("/", (req, res) => res.status(200).send("Sophia Voice is live ✅"));
 
+// CSV logging
 const LEADS_CSV = path.join(__dirname, "leads.csv");
 if (!fs.existsSync(LEADS_CSV)) fs.writeFileSync(LEADS_CSV, "timestamp,channel,from,body\n");
 
+// Twilio + OpenAI setup
 const { MessagingResponse, VoiceResponse } = twilio.twiml;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// Send data to Google Sheets
 const postSheets = async (payload) => {
   const url = process.env.SHEETS_WEBAPP_URL;
   if (!url) return;
   try {
-    const r = await fetch(url, {
+    await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    await r.text();
   } catch {}
 };
 
+// SMS Route
 app.post("/sms", async (req, res) => {
   const from = req.body.From || "Unknown";
-  const userMsg = req.body.Body || "";
-  fs.appendFileSync(LEADS_CSV, `${new Date().toISOString()},SMS,${from},"${userMsg.replace(/"/g,"'")}"\n`);
-  postSheets({ timestamp:new Date().toISOString(), channel:"SMS", from, body:userMsg });
+  const body = req.body.Body || "";
 
-  let reply = "Thanks for messaging.";
+  fs.appendFileSync(LEADS_CSV, `${new Date().toISOString()},SMS,${from},"${body.replace(/"/g,"'")}"\n`);
+  postSheets({ timestamp: new Date().toISOString(), channel: "SMS", from, body });
+
+  let reply = "Thanks for your message!";
   try {
-    const r = await openai.chat.completions.create({
+    const completion = await openai.responses.create({
       model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "You are Sophia, a friendly AI receptionist. Be concise, natural, and helpful." },
-        { role: "user", content: userMsg }
-      ],
-      max_tokens: 120,
-      temperature: 0.4
+      input: `You are Sophia, a friendly, professional AI receptionist for a real estate business. Reply briefly and naturally to: "${body}"`,
     });
-    reply = (r.choices?.[0]?.message?.content || "").trim() || reply;
-  } catch {}
+    reply = completion.output[0].content[0].text || reply;
+  } catch (e) {
+    console.error("OpenAI error:", e.message);
+  }
 
   const twiml = new MessagingResponse();
   twiml.message(reply);
   res.type("text/xml").send(twiml.toString());
 });
 
-app.post("/voice", async (req, res) => {
+// Voice route
+app.post("/voice", (req, res) => {
   const from = req.body.From || "Unknown";
-  postSheets({ timestamp:new Date().toISOString(), channel:"VOICE", from, body:"Call started" });
+  postSheets({ timestamp: new Date().toISOString(), channel: "VOICE", from, body: "Call started" });
+
   const twiml = new VoiceResponse();
-  twiml.say("Hello. This is Sophia Voice AI. How can I help you?");
+  twiml.say("Hello, this is Sophia Voice AI. How can I help you today?");
   res.type("text/xml").send(twiml.toString());
 });
 
-if (process.env.PUBLIC_URL) {
-  setInterval(() => {
-    fetch(process.env.PUBLIC_URL)
-      .then(() => console.log("Pinged self to stay awake"))
-      .catch(() => {});
-  }, 5 * 60 * 1000);
-}
+// Status route
+app.get("/status", async (req, res) => {
+  const status = { server: "✅ Active", openai: "❌ Down", sheets: "❌ Down" };
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server running on port", PORT));
+  try
