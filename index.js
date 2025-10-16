@@ -1,23 +1,37 @@
-// Minimal Express app for Render (CommonJS version)
+require("dotenv").config();
 const express = require("express");
-const app = express();
+const fs = require("fs");
+const path = require("path");
+const twilio = require("twilio");
+const OpenAI = require("openai");
 
+const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Health/homepage route (fixes "Cannot GET /")
-app.get("/", (req, res) => {
-  res.status(200).send("Sophia Voice is live ✅");
-});
+app.get("/", (req, res) => res.status(200).send("Sophia Voice is live ✅"));
 
-// Twilio webhooks (optional stubs; safe to keep)
-app.post("/sms", (req, res) => {
-  return res.type("text/xml").send(`<Response><Message>Hi, this is Sophia AI. Thanks for messaging!</Message></Response>`);
-});
-app.post("/voice", (req, res) => {
-  return res.type("text/xml").send(`<Response><Say>Hello! This is Sophia Voice AI. How can I help you?</Say></Response>`);
-});
+const LEADS_CSV = path.join(__dirname, "leads.csv");
+if (!fs.existsSync(LEADS_CSV)) fs.writeFileSync(LEADS_CSV, "timestamp,channel,from,body\n");
 
-// Listen on Render's port
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server running on port", PORT));
+const { TWILIO_SID, TWILIO_AUTH } = process.env;
+const client = twilio(TWILIO_SID, TWILIO_AUTH);
+const { MessagingResponse, VoiceResponse } = twilio.twiml;
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+const logToSheets = async (payload) => {
+  const url = process.env.SHEETS_WEBAPP_URL;
+  if (!url) return;
+  try {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await r.text();
+  } catch {}
+};
+
+app.get("/test-sheets", async (req, res) => {
+  await logToSheets({ timestamp: new Date().toISOString(), channel: "TEST", from: "manual", body: "hello from /test-sheets" });
+  res.send("O
