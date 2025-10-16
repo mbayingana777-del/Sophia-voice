@@ -9,7 +9,7 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-app.get("/", (req, res) => res.status(200).send("Sophia Voice is live ✅"));
+app.get("/", (req, res) => { res.status(200).send("Sophia Voice is live"); });
 
 const LEADS_CSV = path.join(__dirname, "leads.csv");
 if (!fs.existsSync(LEADS_CSV)) fs.writeFileSync(LEADS_CSV, "timestamp,channel,from,body\n");
@@ -29,9 +29,42 @@ const logToSheets = async (payload) => {
       body: JSON.stringify(payload),
     });
     await r.text();
-  } catch {}
+  } catch (e) {
+    console.error("Sheets error:", e.message);
+  }
 };
 
 app.get("/test-sheets", async (req, res) => {
-  await logToSheets({ timestamp: new Date().toISOString(), channel: "TEST", from: "manual", body: "hello from /test-sheets" });
-  res.send("O
+  await logToSheets({
+    timestamp: new Date().toISOString(),
+    channel: "TEST",
+    from: "manual",
+    body: "hello from /test-sheets"
+  });
+  res.send("OK");
+});
+
+app.post("/sms", async (req, res) => {
+  const from = req.body.From || "Unknown";
+  const body = req.body.Body || "";
+  fs.appendFileSync(LEADS_CSV, `${new Date().toISOString()},SMS,${from},"${body.replace(/"/g,"'")}"\n`);
+  logToSheets({ timestamp: new Date().toISOString(), channel: "SMS", from, body });
+  const twiml = new MessagingResponse();
+  twiml.message("Thanks for messaging.");
+  res.type("text/xml").send(twiml.toString());
+});
+
+app.post("/voice", async (req, res) => {
+  const from = req.body.From || "Unknown";
+  logToSheets({ timestamp: new Date().toISOString(), channel: "VOICE", from, body: "Call started" });
+  const twiml = new VoiceResponse();
+  twiml.say("Hello. This is Sophia Voice AI. How can I help you?");
+  res.type("text/xml").send(twiml.toString());
+});
+
+if (process.env.PUBLIC_URL) {
+  setInterval(() => { fetch(process.env.PUBLIC_URL).catch(() => {}); }, 5 * 60 * 1000);
+}
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("Server running on port", PORT));
