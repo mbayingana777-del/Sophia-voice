@@ -14,33 +14,21 @@ app.get("/", (req, res) => res.status(200).send("Sophia Voice is live"));
 const LEADS_CSV = path.join(__dirname, "leads.csv");
 if (!fs.existsSync(LEADS_CSV)) fs.writeFileSync(LEADS_CSV, "timestamp,channel,from,body\n");
 
-const { TWILIO_SID, TWILIO_AUTH } = process.env;
-const client = twilio(TWILIO_SID, TWILIO_AUTH);
 const { MessagingResponse, VoiceResponse } = twilio.twiml;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const postSheets = async (payload) => {
   const url = process.env.SHEETS_WEBAPP_URL;
-  if (!url) return { ok:false, status:0, text:"missing SHEETS_WEBAPP_URL" };
+  if (!url) return;
   try {
     const r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const txt = await r.text();
-    return { ok:r.ok, status:r.status, text:txt };
-  } catch (e) {
-    return { ok:false, status:0, text:String(e.message||e) };
-  }
+    await r.text();
+  } catch {}
 };
-
-app.get("/env-check", (req, res) => res.send(process.env.SHEETS_WEBAPP_URL ? "env ok" : "env missing"));
-
-app.get("/test-sheets", async (req, res) => {
-  const r = await postSheets({ timestamp:new Date().toISOString(), channel:"TEST", from:"manual", body:"hello from /test-sheets" });
-  res.status(r.ok?200:500).send((r.status+" "+r.text).slice(0,200));
-});
 
 app.post("/sms", async (req, res) => {
   const from = req.body.From || "Unknown";
