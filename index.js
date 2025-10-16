@@ -41,7 +41,7 @@ app.post("/sms", async (req, res) => {
     const r = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "You are Sophia, a friendly receptionist. Be concise and helpful." },
+        { role: "system", content: "You are Sophia, a friendly AI receptionist. Be concise, natural, and helpful." },
         { role: "user", content: userMsg }
       ],
       max_tokens: 120,
@@ -64,7 +64,11 @@ app.post("/voice", async (req, res) => {
 });
 
 if (process.env.PUBLIC_URL) {
-  setInterval(() => { fetch(process.env.PUBLIC_URL).catch(() => {}); }, 5 * 60 * 1000);
+  setInterval(() => {
+    fetch(process.env.PUBLIC_URL)
+      .then(() => console.log("Pinged self to stay awake"))
+      .catch(() => {});
+  }, 5 * 60 * 1000);
 }
 
 const PORT = process.env.PORT || 3000;
