@@ -35,13 +35,11 @@ const postSheets = async (payload) => {
   }
 };
 
+app.get("/env-check", (req, res) => res.send(process.env.SHEETS_WEBAPP_URL ? "env ok" : "env missing"));
+
 app.get("/test-sheets", async (req, res) => {
   const r = await postSheets({ timestamp:new Date().toISOString(), channel:"TEST", from:"manual", body:"hello from /test-sheets" });
-  res.status(r.ok?200:500).send(`${r.status} ${r.text}`.slice(0,200));
-});
-
-app.get("/env-check", (req, res) => {
-  res.send(process.env.SHEETS_WEBAPP_URL ? "env ok" : "env missing");
+  res.status(r.ok?200:500).send((r.status+" "+r.text).slice(0,200));
 });
 
 app.post("/sms", async (req, res) => {
@@ -68,8 +66,3 @@ if (process.env.PUBLIC_URL) {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Server running on port", PORT));
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server running on port", PORT));
-
-
