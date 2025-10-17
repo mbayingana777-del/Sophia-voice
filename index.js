@@ -1,35 +1,46 @@
-// --- Sophia Voice server (CommonJS) ---
+// ===============================
+// Sophia Voice server (CommonJS)
+// ===============================
 require('dotenv').config();
 const express = require('express');
-const twilioLib = require('twilio');
-
-// Node 18+ has global fetch; if not, uncomment next line:
-// const fetch = (...args) => import('node-fetch').then(({default: f}) => f(...args));
+const { twiml: TwilioTwiML } = require('twilio');
+const twilio = require('twilio');
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Allow your landing page to POST /web-lead
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
+// ---------- Twilio REST client (for owner alerts) ----------
+let client = null;
+if (process.env.TWILIO_SID && process.env.TWILIO_AUTH) {
+  client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
+}
 
-// ---------- helpers ----------
+// ---------- Helpers ----------
 async function postToSheets(payload) {
+  const url = process.env.SHEETS_WEBAPP_URL; // your Apps Script /exec URL
+  if (!url) return;
+
   try {
-    const url = process.env.SHEETS_WEBAPP_URL; // Google Apps Script /exec
-    if (!url) return;
+    // Try JSON first
     await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-  } catch (e) {
-    console.error('postToSheets failed:', e.message);
+  } catch {
+    // Fallback: form-encoded (Apps Script can read this too)
+    const form = new URLSearchParams();
+    for (const [k, v] of Object.entries(payload)) form.append(k, v ?? '');
+    try {
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: form.toString(),
+      });
+    } catch {
+      // swallow — we never block Twilio because Sheets is down
+    }
   }
 }
 
@@ -44,41 +55,22 @@ function logLead({ channel, from, body, source, utm }) {
   });
 }
 
-async function notifyOwner(text) {
-  try {
-    const { TWILIO_SID, TWILIO_AUTH, TWILIO_NUMBER, OWNER_PHONE } = process.env;
-    if (!TWILIO_SID || !TWILIO_AUTH || !TWILIO_NUMBER || !OWNER_PHONE) return;
-    const client = twilioLib(TWILIO_SID, TWILIO_AUTH);
-    await client.messages.create({
-      to: OWNER_PHONE,
-      from: TWILIO_NUMBER,
-      body: text.slice(0, 1400),
-    });
-  } catch (e) {
-    console.error('notifyOwner failed:', e.message);
-  }
-}
-
-// ---------- root & health ----------
-app.get('/', (_, res) => res.status(200).send('Sophia Voice is live ✅'));
-
-app.get('/status', async (_, res) => {
-  const ok = {
+// ---------- Root & health ----------
+app.get('/', (_req, res) => res.status(200).send('Sophia Voice is live ✅'));
+app.get('/status', (_req, res) => {
+  res.json({
     server: 'OK',
     openai: process.env.OPENAI_API_KEY ? 'OK' : 'MISSING',
     sheets: process.env.SHEETS_WEBAPP_URL ? 'OK' : 'MISSING',
-  };
-  res.json(ok);
+  });
 });
 
-// ---------- SMS webhook ----------
+// ---------- SMS webhook (POST from Twilio) ----------
 app.post('/sms', async (req, res) => {
-  const { twiml } = twilioLib;
   const from = req.body.From || 'Unknown';
   const body = (req.body.Body || '').trim();
-  const msg = new twiml.MessagingResponse();
+  const msg = new TwilioTwiML.MessagingResponse();
 
-  // Compliance keywords
   const upper = body.toUpperCase();
   if (['STOP', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT'].includes(upper)) {
     msg.message('You have opted out of Sophia Voice messages. Reply START to resubscribe.');
@@ -86,85 +78,95 @@ app.post('/sms', async (req, res) => {
     return res.type('text/xml').send(msg.toString());
   }
   if (upper === 'HELP') {
-    msg.message('Sophia Voice AI Receptionist. For help email hello@sophiavoice.ai. Msg&Data rates may apply. Reply STOP to opt out.');
+    msg.message('Sophia Voice AI Receptionist. For help: hello@sophiavoice.ai. Msg&Data rates may apply. Reply STOP to opt out.');
     await logLead({ channel: 'SMS', from, body: 'HELP', source: 'sms' });
     return res.type('text/xml').send(msg.toString());
   }
-  if (upper === 'START') {
-    msg.message('Welcome back to Sophia Voice updates. Reply STOP to opt out anytime.');
-    await logLead({ channel: 'SMS', from, body: 'START', source: 'sms' });
-    return res.type('text/xml').send(msg.toString());
-  }
 
-  // Normal flow
   await logLead({ channel: 'SMS', from, body, source: 'sms' });
   msg.message("Thanks! I'm Sophia. I’ve noted your message and will follow up.");
   res.type('text/xml').send(msg.toString());
 });
 
-// ---------- Voice webhook ----------
+// ---------- Voice webhook (POST from Twilio) ----------
 app.post('/voice', async (req, res) => {
-  const { twiml } = twilioLib;
   const from = req.body.From || 'Unknown';
   await logLead({ channel: 'VOICE', from, body: 'Call started', source: 'voice' });
 
-  const vr = new twiml.VoiceResponse();
-  // Simple greeting then voicemail
-  vr.say({ voice: 'alice' }, 'Hello! This is Sophia, your AI receptionist. Please leave a message after the tone. Press any key to finish.');
-  vr.record({
-    maxLength: 120,
-    finishOnKey: 'any',
-    playBeep: true,
-    recordingStatusCallback: '/voicemail',
-    recordingStatusCallbackMethod: 'POST',
-  });
-  vr.hangup();
-
+  const vr = new TwilioTwiML.VoiceResponse();
+  vr.say({ voice: 'alice' }, 'Hello! This is Sophia, your A I receptionist. How can I help you today?');
   res.type('text/xml').send(vr.toString());
 });
 
-// GET /voice just for browser sanity check (Twilio uses POST)
-app.get('/voice', (_, res) => {
+// GET /voice for your browser sanity check (Twilio uses POST)
+app.get('/voice', (_req, res) => {
   res.status(200).send('Voice endpoint is up. Twilio will POST here.');
 });
 
-// Voicemail recording callback from Twilio
-app.post('/voicemail', async (req, res) => {
-  const from = req.body.From || 'Unknown';
-  const url = req.body.RecordingUrl || '';
-  await logLead({ channel: 'VOICE', from, body: `Voicemail: ${url}`, source: 'voice' });
-  await notifyOwner(`New voicemail from ${from}: ${url}`);
-  res.type('text/xml').send('<Response/>');
-});
-
-// ---------- Landing page web-lead ----------
+// ---------- Landing page lead intake ----------
 app.post('/web-lead', async (req, res) => {
   const name = (req.body.name || '').toString().trim();
   const phone = (req.body.phone || '').toString().trim();
   const message = (req.body.message || '').toString().trim();
-  const utm = (req.body.utm || '').toString();
 
   await logLead({
     channel: 'WEB',
     from: phone || 'unknown',
-    body: `${name || 'Unknown'} — ${message || ''}`,
+    body: `${name} — ${message}`,
     source: 'landing',
-    utm,
+    utm: (req.body.utm || '').toString(),
   });
 
-  // Owner alert (optional; requires env vars)
-  await notifyOwner(`NEW WEB LEAD → ${name || 'Unknown'} ${phone ? '(' + phone + ')' : ''} — ${message || ''}`);
-
   res.json({ ok: true });
 });
 
-// Quick test to ping owner alert
-app.get('/test-owner-alert', async (_, res) => {
-  await notifyOwner('Test alert from Sophia Voice ✅');
-  res.json({ ok: true });
+// ---------- Owner alert test ----------
+app.get('/test-owner-alert', async (_req, res) => {
+  try {
+    if (!client) return res.status(400).send('Twilio client not configured');
+    if (!process.env.OWNER_PHONE || !process.env.TWILIO_FROM) {
+      return res.status(400).send('Set OWNER_PHONE and TWILIO_FROM first');
+    }
+    await client.messages.create({
+      to: process.env.OWNER_PHONE,
+      from: process.env.TWILIO_FROM,
+      body: 'Test alert from Sophia Voice ✅',
+    });
+    res.send('Alert sent ✅');
+  } catch (e) {
+    res.status(500).send('Failed to send alert: ' + e.message);
+  }
 });
 
-// ---------- start server (single declaration) ----------
+// ---------- Browser test pages (no terminal needed) ----------
+app.get('/sms-test', (_req, res) => {
+  res.type('html').send(`
+    <h2>SMS POST test (simulates Twilio)</h2>
+    <form method="post" action="/sms" style="display:grid;gap:8px;max-width:360px;">
+      <label>From (E.164, e.g. +17244195881)
+        <input name="From" value="+17244195881" />
+      </label>
+      <label>Body
+        <input name="Body" value="Hello from browser test" />
+      </label>
+      <button type="submit">Send POST to /sms</button>
+    </form>
+    <p>This submits a <strong>form-encoded POST</strong>, same as Twilio.</p>
+  `);
+});
+
+app.get('/voice-test', (_req, res) => {
+  res.type('html').send(`
+    <h2>Voice POST test (simulates Twilio)</h2>
+    <form method="post" action="/voice" style="display:grid;gap:8px;max-width:360px;">
+      <label>From (E.164)
+        <input name="From" value="+17244195881" />
+      </label>
+      <button type="submit">Send POST to /voice</button>
+    </form>
+  `);
+});
+
+// ---------- Start server ----------
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => console.log('Sophia Voice listening on', PORT));
-
