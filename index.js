@@ -1,4 +1,4 @@
-// index.js
+// index.js — Sophia Voice backend
 require("dotenv").config();
 const express = require("express");
 const twilio = require("twilio");
@@ -7,7 +7,7 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// CORS so the static site can POST here
+// CORS — allows your landing page to talk to this backend
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -15,7 +15,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ---- helpers
+// ---- Helper: send data to Google Sheets
 async function postSheets(payload) {
   if (!process.env.SHEETS_WEBAPP_URL) return;
   try {
@@ -29,21 +29,15 @@ async function postSheets(payload) {
   }
 }
 
-function okJSON(res, obj) {
-  res.setHeader("Content-Type", "application/json");
-  res.end(JSON.stringify(obj));
-}
-
-// ---- routes
-
-// health
+// ---- Health route
 app.get("/", (req, res) => res.status(200).send("Sophia Voice is live ✅"));
 
-// status
+// ---- Status route
 app.get("/status", async (req, res) => {
   let server = "OK";
   let openai = process.env.OPENAI_API_KEY ? "OK" : "DOWN";
   let sheets = "DOWN";
+
   try {
     if (process.env.SHEETS_WEBAPP_URL) {
       await postSheets({
@@ -57,14 +51,15 @@ app.get("/status", async (req, res) => {
   } catch {
     sheets = "DOWN";
   }
-  okJSON(res, { server, openai, sheets });
+
+  res.json({ server, openai, sheets });
 });
 
-// web lead from landing page
+// ---- Web Lead route (used by your landing form)
 app.post("/web-lead", async (req, res) => {
   try {
     const { name = "", phone = "", note = "" } = req.body || {};
-    if (!name && !note) return okJSON(res, { ok: false, error: "Missing fields" });
+    if (!name && !note) return res.json({ ok: false, error: "Missing fields" });
 
     const payload = {
       timestamp: new Date().toISOString(),
@@ -75,7 +70,7 @@ app.post("/web-lead", async (req, res) => {
 
     await postSheets(payload);
 
-    // optional owner SMS (works fully after Twilio upgrade)
+    // Optional: notify owner via SMS (works after Twilio unlock)
     try {
       const { TWILIO_SID, TWILIO_AUTH, TWILIO_NUMBER, OWNER_PHONE } = process.env;
       if (TWILIO_SID && TWILIO_AUTH && TWILIO_NUMBER && OWNER_PHONE) {
@@ -90,14 +85,14 @@ app.post("/web-lead", async (req, res) => {
       console.error("Owner SMS alert failed:", e.message);
     }
 
-    okJSON(res, { ok: true });
+    res.json({ ok: true });
   } catch (e) {
     console.error("WEB-LEAD ERROR:", e);
-    okJSON(res, { ok: false, error: "Server error" });
+    res.json({ ok: false, error: "Server error" });
   }
 });
 
-// sms webhook (basic)
+// ---- SMS route (for Twilio incoming)
 app.post("/sms", async (req, res) => {
   const { MessagingResponse } = twilio.twiml;
   const twiml = new MessagingResponse();
@@ -115,7 +110,7 @@ app.post("/sms", async (req, res) => {
   res.type("text/xml").send(twiml.toString());
 });
 
-// voice webhook (basic)
+// ---- Voice route (for Twilio incoming calls)
 app.post("/voice", async (req, res) => {
   const { VoiceResponse } = twilio.twiml;
   const twiml = new VoiceResponse();
@@ -131,13 +126,14 @@ app.post("/voice", async (req, res) => {
   res.type("text/xml").send(twiml.toString());
 });
 
-// keep-alive ping (optional)
+// ---- Keep-alive ping to prevent sleep
 if (process.env.PUBLIC_URL) {
   setInterval(() => {
     fetch(process.env.PUBLIC_URL).catch(() => {});
-  }, 5 * 60 * 1000);
+  }, 5 * 60 * 1000); // every 5 min
 }
 
-// start server
+// ---- Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server running on port", PORT));
+app.listen(PORT, () => console.log("✅ Sophia Voice backend running on port", PORT));
+
