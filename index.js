@@ -1,4 +1,4 @@
-// index.js — Sophia Voice backend
+// index.js — Sophia Voice backend (with source + utm)
 require("dotenv").config();
 const express = require("express");
 const twilio = require("twilio");
@@ -7,7 +7,7 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// CORS — allows your landing page to talk to this backend
+// CORS — allow the landing site to call this API
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -15,7 +15,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ---- Helper: send data to Google Sheets
+// ---- helper to post to Google Sheets Web App
 async function postSheets(payload) {
   if (!process.env.SHEETS_WEBAPP_URL) return;
   try {
@@ -29,15 +29,14 @@ async function postSheets(payload) {
   }
 }
 
-// ---- Health route
+// health
 app.get("/", (req, res) => res.status(200).send("Sophia Voice is live ✅"));
 
-// ---- Status route
+// status
 app.get("/status", async (req, res) => {
   let server = "OK";
   let openai = process.env.OPENAI_API_KEY ? "OK" : "DOWN";
   let sheets = "DOWN";
-
   try {
     if (process.env.SHEETS_WEBAPP_URL) {
       await postSheets({
@@ -45,20 +44,22 @@ app.get("/status", async (req, res) => {
         channel: "STATUS",
         from: "server",
         body: "ping",
+        source: "backend",
+        utm: ""
       });
       sheets = "OK";
     }
   } catch {
     sheets = "DOWN";
   }
-
   res.json({ server, openai, sheets });
 });
 
-// ---- Web Lead route (used by your landing form)
+// ---- web-lead from landing form
 app.post("/web-lead", async (req, res) => {
   try {
-    const { name = "", phone = "", note = "" } = req.body || {};
+    const { name = "", phone = "", note = "", utm = "" } = req.body || {};
+
     if (!name && !note) return res.json({ ok: false, error: "Missing fields" });
 
     const payload = {
@@ -66,11 +67,13 @@ app.post("/web-lead", async (req, res) => {
       channel: "WEB",
       from: phone || "web",
       body: `${name || "Unknown"} — ${note || ""}`,
+      source: "landing",
+      utm: utm || ""
     };
 
     await postSheets(payload);
 
-    // Optional: notify owner via SMS (works after Twilio unlock)
+    // optional owner alert (works fully after Twilio unlock)
     try {
       const { TWILIO_SID, TWILIO_AUTH, TWILIO_NUMBER, OWNER_PHONE } = process.env;
       if (TWILIO_SID && TWILIO_AUTH && TWILIO_NUMBER && OWNER_PHONE) {
@@ -78,7 +81,7 @@ app.post("/web-lead", async (req, res) => {
         await client.messages.create({
           to: OWNER_PHONE,
           from: TWILIO_NUMBER,
-          body: `NEW WEB LEAD → ${name} ${phone ? "(" + phone + ")" : ""} — ${note}`,
+          body: `NEW WEB LEAD → ${name} ${phone ? "(" + phone + ")" : ""} — ${note}`
         });
       }
     } catch (e) {
@@ -92,7 +95,7 @@ app.post("/web-lead", async (req, res) => {
   }
 });
 
-// ---- SMS route (for Twilio incoming)
+// ---- SMS (Twilio inbound)
 app.post("/sms", async (req, res) => {
   const { MessagingResponse } = twilio.twiml;
   const twiml = new MessagingResponse();
@@ -104,13 +107,15 @@ app.post("/sms", async (req, res) => {
     channel: "SMS",
     from,
     body,
+    source: "twilio",
+    utm: ""
   });
 
   twiml.message("Thanks for reaching Sophia! We’ll follow up shortly.");
   res.type("text/xml").send(twiml.toString());
 });
 
-// ---- Voice route (for Twilio incoming calls)
+// ---- Voice (Twilio inbound)
 app.post("/voice", async (req, res) => {
   const { VoiceResponse } = twilio.twiml;
   const twiml = new VoiceResponse();
@@ -120,20 +125,20 @@ app.post("/voice", async (req, res) => {
     channel: "VOICE",
     from: req.body.From || "Unknown",
     body: "Call started",
+    source: "twilio",
+    utm: ""
   });
 
   twiml.say("Hello! This is Sophia Voice AI. How can I help you today?");
   res.type("text/xml").send(twiml.toString());
 });
 
-// ---- Keep-alive ping to prevent sleep
+// keep-alive (optional)
 if (process.env.PUBLIC_URL) {
   setInterval(() => {
     fetch(process.env.PUBLIC_URL).catch(() => {});
-  }, 5 * 60 * 1000); // every 5 min
+  }, 5 * 60 * 1000);
 }
 
-// ---- Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("✅ Sophia Voice backend running on port", PORT));
-
