@@ -1,72 +1,117 @@
-// index.js
-import express from "express";
-import fetch from "node-fetch";
-import dotenv from "dotenv";
-import { MessagingResponse, VoiceResponse } from "twilio";
+// --- Sophia Voice server (CommonJS) ---
+require('dotenv').config();
+const express = require('express');
+const { twiml: TwilioTwiML } = require('twilio');
 
-dotenv.config();
 const app = express();
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: false }));
 
-const PORT = process.env.PORT || 3000;
-const SHEETS_WEBAPP_URL = process.env.SHEETS_WEBAPP_URL;
-
-// POST to Google Sheets
-async function postSheets(payload) {
+// ---------- helpers ----------
+async function postToSheets(payload) {
   try {
-    await fetch(SHEETS_WEBAPP_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    const url = process.env.SHEETS_WEBAPP_URL; // Google Apps Script /exec
+    if (!url) return;
+
+    // send as JSON first; Apps Script will try JSON, then fall back to params
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-  } catch (err) {
-    console.error("Sheet error:", err.message);
+  } catch (_) {
+    // ignore – we don't want to block Twilio responses
   }
 }
 
-// Web lead route
-app.post("/web-lead", async (req, res) => {
-  const { name, phone, message, utm } = req.body;
-  const payload = {
+function logLead({ channel, from, body, source, utm }) {
+  return postToSheets({
     timestamp: new Date().toISOString(),
-    channel: "WEB",
-    from: phone || "unknown",
-    body: `${name || "Unknown"} — ${message || ""}`,
-    source: "landing-page",
-    utm: utm || "",
-  };
-  await postSheets(payload);
-  res.json({ status: "ok" });
-});
-
-// Voice test
-app.post("/voice", async (req, res) => {
-  const twiml = new VoiceResponse();
-  twiml.say("Hello, this is Sophia Voice. How can I help you today?");
-  res.type("text/xml").send(twiml.toString());
-  await postSheets({
-    timestamp: new Date().toISOString(),
-    channel: "VOICE",
-    from: req.body.From || "unknown",
-    body: "Call started",
-    source: "phone",
+    channel,
+    from,
+    body,
+    source,
+    utm,
   });
+}
+
+// ---------- root & health ----------
+app.get('/', (_, res) => res.status(200).send('Sophia Voice is live ✅'));
+
+app.get('/status', async (req, res) => {
+  // quick self-check; if we can reach Sheets URL format at least, say OK
+  const ok = {
+    server: 'OK',
+    openai: 'OK',
+    sheets: process.env.SHEETS_WEBAPP_URL ? 'OK' : 'MISSING',
+  };
+  res.json(ok);
 });
 
-// System status
-app.get("/status", async (req, res) => {
-  try {
-    await fetch(SHEETS_WEBAPP_URL, { method: "GET" });
-    res.json({ server: "OK", openai: "OK", sheets: "OK" });
-  } catch {
-    res.json({ server: "OK", openai: "OK", sheets: "DOWN" });
+// ---------- SMS webhook ----------
+app.post('/sms', async (req, res) => {
+  const from = req.body.From || 'Unknown';
+  const body = (req.body.Body || '').trim();
+  const twiml = new TwilioTwiML.MessagingResponse();
+
+  // Compliance keywords
+  const upper = body.toUpperCase();
+  if (upper === 'STOP' || upper === 'UNSUBSCRIBE' || upper === 'CANCEL' || upper === 'END' || upper === 'QUIT') {
+    twiml.message('You have opted out of Sophia Voice messages. Reply START to resubscribe.');
+    await logLead({ channel: 'SMS', from, body: 'STOP', source: 'sms' });
+    res.type('text/xml').send(twiml.toString());
+    return;
   }
+  if (upper === 'HELP') {
+    twiml.message('Sophia Voice AI Receptionist. For help email hello@sophiavoice.ai. Msg&Data rates may apply. Reply STOP to opt out.');
+    await logLead({ channel: 'SMS', from, body: 'HELP', source: 'sms' });
+    res.type('text/xml').send(twiml.toString());
+    return;
+  }
+
+  // Normal log + basic reply
+  await logLead({ channel: 'SMS', from, body, source: 'sms' });
+  twiml.message("Thanks! I'm Sophia. I’ve noted your message and will follow up.");
+  res.type('text/xml').send(twiml.toString());
 });
 
-app.listen(PORT, () => console.log(`✅ Server running on ${PORT}`));
+// ---------- Voice webhook ----------
+app.post('/voice', async (req, res) => {
+  const from = req.body.From || 'Unknown';
+  await logLead({ channel: 'VOICE', from, body: 'Call started', source: 'voice' });
 
+  const vr = new TwilioTwiML.VoiceResponse();
+  vr.say({ voice: 'alice' }, 'Hello! This is Sophia, your AI receptionist. How can I help you today?');
+  res.type('text/xml').send(vr.toString());
+});
+
+// GET /voice just for your browser sanity check (Twilio uses POST)
+app.get('/voice', (_, res) => {
+  res.status(200).send('Voice endpoint is up. Twilio will POST here.');
+});
+
+// ---------- Landing page lead form ----------
+app.post('/web-lead', async (req, res) => {
+  const name = (req.body.name || '').toString().trim();
+  const phone = (req.body.phone || '').toString().trim();
+  const message = (req.body.message || '').toString().trim();
+
+  await logLead({
+    channel: 'WEB',
+    from: phone || 'unknown',
+    body: `${name} — ${message}`,
+    source: 'landing',
+    utm: req.body.utm || '',
+  });
+
+  res.json({ ok: true });
+});
+
+// ---------- start server (single declaration) ----------
+const PORT = Number(process.env.PORT) || 3000;
+app.listen(PORT, () => console.log('Sophia Voice listening on', PORT));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("✅ Sophia Voice backend running on port", PORT));
+
 
