@@ -111,7 +111,4 @@ app.post('/web-lead', async (req, res) => {
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => console.log('Sophia Voice listening on', PORT));
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("✅ Sophia Voice backend running on port", PORT));
-
 
