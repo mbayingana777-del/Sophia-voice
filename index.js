@@ -1,128 +1,143 @@
+// index.js
 require("dotenv").config();
 const express = require("express");
-const fs = require("fs");
-const path = require("path");
 const twilio = require("twilio");
-const OpenAI = require("openai");
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-app.get("/", (req, res) => res.status(200).send("Sophia Voice is live"));
+// CORS so the static site can POST here
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
+});
 
-const LEADS_CSV = path.join(__dirname, "leads.csv");
-if (!fs.existsSync(LEADS_CSV)) fs.writeFileSync(LEADS_CSV, "timestamp,channel,from,body\n");
-
-const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
-const { MessagingResponse, VoiceResponse } = twilio.twiml;
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-const postSheets = async (payload) => {
-  const url = process.env.SHEETS_WEBAPP_URL;
-  if (!url) return false;
+// ---- helpers
+async function postSheets(payload) {
+  if (!process.env.SHEETS_WEBAPP_URL) return;
   try {
-    const r = await fetch(url, {
+    await fetch(process.env.SHEETS_WEBAPP_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    await r.text();
-    return r.ok;
-  } catch {
-    return false;
-  }
-};
-
-const logError = (body) =>
-  postSheets({ timestamp: new Date().toISOString(), channel: "ERROR", from: "system", body });
-
-const tonePrompt = () => {
-  const t = String(process.env.SOPHIA_TONE || "classic").toLowerCase();
-  if (t === "luxe") return "You are Sophia Luxe: elegant, calm, premium tone. Polished and reassuring.";
-  if (t === "hustle") return "You are Sophia Hustle: upbeat, energetic, friendly, action-oriented.";
-  return "You are Sophia Classic: warm, professional, concise, helpful.";
-};
-
-app.get("/status", async (req, res) => {
-  const status = { server: "OK", openai: "DOWN", sheets: "DOWN" };
-  try { await openai.models.list(); status.openai = "OK"; } catch {}
-  try { const r = await fetch(process.env.SHEETS_WEBAPP_URL, { method: "GET" }); if (r.ok) status.sheets = "OK"; } catch {}
-  res.json(status);
-});
-
-app.get("/test-owner-alert", async (req, res) => {
-  try {
-    if (!process.env.OWNER_PHONE || !process.env.TWILIO_NUMBER) return res.status(400).send("missing env");
-    const msg = await client.messages.create({
-      from: process.env.TWILIO_NUMBER,
-      to: process.env.OWNER_PHONE,
-      body: "Test alert from Sophia Voice",
-    });
-    res.send(`ok ${msg.sid}`);
   } catch (e) {
-    await logError(`Owner alert test failed: ${e.message || e}`);
-    res.status(500).send(String(e.message || e));
+    console.error("Sheets post error:", e.message);
   }
-});
-
-app.post("/sms", async (req, res) => {
-  const from = req.body.From || "Unknown";
-  const body = (req.body.Body || "").trim();
-  fs.appendFileSync(LEADS_CSV, `${new Date().toISOString()},SMS,${from},"${body.replace(/"/g,"'")}"\n`);
-  postSheets({ timestamp: new Date().toISOString(), channel: "SMS", from, body });
-
-  if (process.env.OWNER_PHONE && process.env.TWILIO_NUMBER) {
-    try {
-      await client.messages.create({
-        from: process.env.TWILIO_NUMBER,
-        to: process.env.OWNER_PHONE,
-        body: `New SMS from ${from}: ${body}`,
-      });
-    } catch (e) { logError(`Owner alert SMS failed: ${e.message || e}`); }
-  }
-
-  const wantsBooking = /\b(book|schedule|appointment|tour|showing|see (it|the (house|home|property)))\b/i.test(body);
-  let reply = "Thanks for your message.";
-  try {
-    const base = tonePrompt();
-    const hint = wantsBooking && process.env.BOOKING_LINK ? ` If they want to schedule, include this link once: ${process.env.BOOKING_LINK}` : "";
-    const completion = await openai.responses.create({
-      model: "gpt-4o-mini",
-      input: `${base}${hint}\nUser: ${body}\nAssistant:`,
-    });
-    reply = completion.output?.[0]?.content?.[0]?.text?.trim() || reply;
-  } catch (e) { logError(`OpenAI error: ${e.message || e}`); }
-
-  if (wantsBooking && process.env.BOOKING_LINK && !reply.includes(process.env.BOOKING_LINK)) {
-    reply += `\n${process.env.BOOKING_LINK}`;
-  }
-
-  const twiml = new MessagingResponse();
-  twiml.message(reply);
-  res.type("text/xml").send(twiml.toString());
-});
-
-app.post("/voice", async (req, res) => {
-  const from = req.body.From || "Unknown";
-  postSheets({ timestamp: new Date().toISOString(), channel: "VOICE", from, body: "Call started" });
-  if (process.env.OWNER_PHONE && process.env.TWILIO_NUMBER) {
-    try {
-      await client.messages.create({
-        from: process.env.TWILIO_NUMBER,
-        to: process.env.OWNER_PHONE,
-        body: `Incoming call from ${from}`,
-      });
-    } catch (e) { logError(`Owner alert for call failed: ${e.message || e}`); }
-  }
-  const twiml = new VoiceResponse();
-  twiml.say("Hello, this is Sophia Voice AI. How can I help you today?");
-  res.type("text/xml").send(twiml.toString());
-});
-
-if (process.env.PUBLIC_URL) {
-  setInterval(() => { fetch(process.env.PUBLIC_URL).catch(() => {}); }, 5 * 60 * 1000);
 }
 
+function okJSON(res, obj) {
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify(obj));
+}
+
+// ---- routes
+
+// health
+app.get("/", (req, res) => res.status(200).send("Sophia Voice is live ✅"));
+
+// status
+app.get("/status", async (req, res) => {
+  let server = "OK";
+  let openai = process.env.OPENAI_API_KEY ? "OK" : "DOWN";
+  let sheets = "DOWN";
+  try {
+    if (process.env.SHEETS_WEBAPP_URL) {
+      await postSheets({
+        timestamp: new Date().toISOString(),
+        channel: "STATUS",
+        from: "server",
+        body: "ping",
+      });
+      sheets = "OK";
+    }
+  } catch {
+    sheets = "DOWN";
+  }
+  okJSON(res, { server, openai, sheets });
+});
+
+// web lead from landing page
+app.post("/web-lead", async (req, res) => {
+  try {
+    const { name = "", phone = "", note = "" } = req.body || {};
+    if (!name && !note) return okJSON(res, { ok: false, error: "Missing fields" });
+
+    const payload = {
+      timestamp: new Date().toISOString(),
+      channel: "WEB",
+      from: phone || "web",
+      body: `${name || "Unknown"} — ${note || ""}`,
+    };
+
+    await postSheets(payload);
+
+    // optional owner SMS (works fully after Twilio upgrade)
+    try {
+      const { TWILIO_SID, TWILIO_AUTH, TWILIO_NUMBER, OWNER_PHONE } = process.env;
+      if (TWILIO_SID && TWILIO_AUTH && TWILIO_NUMBER && OWNER_PHONE) {
+        const client = twilio(TWILIO_SID, TWILIO_AUTH);
+        await client.messages.create({
+          to: OWNER_PHONE,
+          from: TWILIO_NUMBER,
+          body: `NEW WEB LEAD → ${name} ${phone ? "(" + phone + ")" : ""} — ${note}`,
+        });
+      }
+    } catch (e) {
+      console.error("Owner SMS alert failed:", e.message);
+    }
+
+    okJSON(res, { ok: true });
+  } catch (e) {
+    console.error("WEB-LEAD ERROR:", e);
+    okJSON(res, { ok: false, error: "Server error" });
+  }
+});
+
+// sms webhook (basic)
+app.post("/sms", async (req, res) => {
+  const { MessagingResponse } = twilio.twiml;
+  const twiml = new MessagingResponse();
+  const from = req.body.From || "Unknown";
+  const body = req.body.Body || "";
+
+  await postSheets({
+    timestamp: new Date().toISOString(),
+    channel: "SMS",
+    from,
+    body,
+  });
+
+  twiml.message("Thanks for reaching Sophia! We’ll follow up shortly.");
+  res.type("text/xml").send(twiml.toString());
+});
+
+// voice webhook (basic)
+app.post("/voice", async (req, res) => {
+  const { VoiceResponse } = twilio.twiml;
+  const twiml = new VoiceResponse();
+
+  await postSheets({
+    timestamp: new Date().toISOString(),
+    channel: "VOICE",
+    from: req.body.From || "Unknown",
+    body: "Call started",
+  });
+
+  twiml.say("Hello! This is Sophia Voice AI. How can I help you today?");
+  res.type("text/xml").send(twiml.toString());
+});
+
+// keep-alive ping (optional)
+if (process.env.PUBLIC_URL) {
+  setInterval(() => {
+    fetch(process.env.PUBLIC_URL).catch(() => {});
+  }, 5 * 60 * 1000);
+}
+
+// start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Server running on port", PORT));
