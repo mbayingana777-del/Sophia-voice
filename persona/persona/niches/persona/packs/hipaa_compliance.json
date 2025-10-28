@@ -1,0 +1,10 @@
+{
+  "brand": {
+    "style_guide": {
+      "dont": [
+        "Ask for diagnoses or medical history",
+        "Share PHI without explicit consent"
+      ]
+    }
+  }
+}
