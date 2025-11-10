@@ -1,23 +1,31 @@
-// Mid-October stable build
+// Sophia Backend (merged) — Persona + Chat + Twilio SMS → Google Sheets
 require('dotenv').config();
+
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
+const cors = require('cors');
 const { twiml: TwilioTwiML } = require('twilio');
 
-// If your Node < 18, uncomment next line and: npm i node-fetch
-// const fetch = (...args) => import('node-fetch').then(({default: f}) => f(...args));
+// If your Node < 18, uncomment next line and run `npm i node-fetch`
+// const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 
 const app = express();
 
-// --- CORS (safe for your landing page / local tests)
+/* ───────────────────────── CORS ─────────────────────────
+   Allow your landing page to call this API. Twilio doesn't use CORS,
+   but the browser requests from your site do. */
+const LANDING_ORIGIN = 'https://mbayingana777-del.github.io';
+app.use(cors({ origin: [LANDING_ORIGIN] }));
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*'); // or your landing domain
+  res.setHeader('Access-Control-Allow-Origin', LANDING_ORIGIN);
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
 
-// Twilio sends application/x-www-form-urlencoded
+// Twilio sends x-www-form-urlencoded, browser sends JSON
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
@@ -25,32 +33,99 @@ const PORT = Number(process.env.PORT) || 3000;
 const SHEETS_URL = process.env.SHEETS_WEBAPP_URL;
 
 if (!SHEETS_URL) {
-  console.warn('⚠️ SHEETS_WEBAPP_URL is not set — Sheets logging will fail.');
+  console.warn('⚠️  SHEETS_WEBAPP_URL is not set — Sheets logging will fail.');
 }
 
-// ---- helper: append a row to Apps Script Web App (GET + query params)
+/* ───────────────────── Persona helpers ───────────────────── */
+function safeReadText(relPath, fallback = '') {
+  try { return fs.readFileSync(path.join(__dirname, relPath), 'utf8'); }
+  catch { return fallback; }
+}
+function safeReadJSON(relPath, fallback = {}) {
+  try { return JSON.parse(safeReadText(relPath, JSON.stringify(fallback))); }
+  catch { return fallback; }
+}
+
+/* ─────────────── Sheets append (POST form-encoded) ───────────────
+   Your Apps Script is expecting POST (not GET). */
 async function appendToSheet({ source, name, phone, message }) {
-  const qs = new URLSearchParams({
+  const body = new URLSearchParams({
     action: 'append',
     source: source || 'unknown',
     name: name || '',
     phone: phone || '',
     message: message || ''
-  }).toString();
+  });
 
-  const url = `${SHEETS_URL}?${qs}`;
-  const r = await fetch(url, { method: 'GET' });
+  const r = await fetch(SHEETS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body
+  });
+
   const text = await r.text();
-
   console.log('Sheets status:', r.status, text.slice(0, 200));
   return { ok: r.ok, status: r.status, body: text };
 }
 
-// ---- health / ping
-app.get('/health', (req, res) => res.json({ ok: true, env: { hasSheetsUrl: !!SHEETS_URL } }));
+/* ───────────────────────── Health ───────────────────────── */
+app.get('/status', (_req, res) =>
+  res.json({ ok: true, status: 'running', service: 'sophia-voice' })
+);
+app.get('/health', (_req, res) =>
+  res.json({ ok: true, env: { hasSheetsUrl: !!SHEETS_URL } })
+);
+app.get('/', (_req, res) => res.send('Sophia backend live'));
 
-// ---- manual test that writes a row (use in browser)
-app.get('/test/sheets', async (req, res) => {
+/* ───────────────────────── Persona ─────────────────────────
+   Works on /persona and /api/persona  */
+function personaHandler(req, res) {
+  try {
+    const niche = (req.query.niche || '').toLowerCase();
+    const packParam = (req.query.pack || '').toLowerCase();
+    const packs = packParam ? packParam.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+    const base = safeReadJSON('persona/base.json', {
+      business_name: 'Sophia Voice',
+      brand: { tagline: 'Your 24/7 AI receptionist that books, texts, and calls back instantly.' },
+      booking_link: 'https://calendly.com/mbayingana777/call-with-sophia',
+      consent: 'By submitting you consent to SMS/voice from Sophia. Reply STOP to opt out.'
+    });
+    const prompts = safeReadText('persona/prompts.md', 'You are Sophia, a helpful AI receptionist.');
+
+    const payload = { base, prompts };
+
+    if (niche) {
+      const nicheOverride = safeReadJSON(`persona/niches/${niche}.json`, null);
+      if (nicheOverride) { payload.niche = niche; payload.override = nicheOverride; }
+    }
+
+    if (packs.length) {
+      payload.packs = {};
+      for (const p of packs) {
+        const packCfg = safeReadJSON(`persona/packs/${p}.json`, null);
+        if (packCfg) payload.packs[p] = packCfg;
+      }
+    }
+
+    res.json(payload);
+  } catch (err) {
+    console.error('Persona route error:', err);
+    res.status(500).json({ error: 'Failed to load persona' });
+  }
+}
+app.get('/persona', personaHandler);
+app.get('/api/persona', personaHandler);
+
+/* ───────────────────────── Chat (temp) ───────────────────────── */
+app.post('/api/chat', (req, res) => {
+  const { message, session_id } = req.body || {};
+  if (!message) return res.status(400).json({ error: 'message required' });
+  res.json({ reply: `You said: ${message}`, session_id: session_id || 'sess-' + Date.now() });
+});
+
+/* ─────────────────── Sheets test (manual) ─────────────────── */
+app.get('/test/sheets', async (_req, res) => {
   try {
     const result = await appendToSheet({
       source: 'manual',
@@ -65,20 +140,14 @@ app.get('/test/sheets', async (req, res) => {
   }
 });
 
-// ---- Twilio SMS webhook (set in Twilio → Messaging → A MESSAGE COMES IN)
+/* ─────────────────────── Twilio webhooks ─────────────────────── */
 app.post('/twilio/sms', async (req, res) => {
   try {
     const from = req.body.From || '';
     const body = (req.body.Body || '').toString();
 
-    await appendToSheet({
-      source: 'twilio',
-      name: from,
-      phone: from,
-      message: body
-    });
+    await appendToSheet({ source: 'twilio', name: from, phone: from, message: body });
 
-    // TwiML reply to sender
     const twiml = new TwilioTwiML.MessagingResponse();
     twiml.message("Thanks! We got your message — we’ll follow up shortly.");
     res.type('text/xml').status(200).send(twiml.toString());
@@ -90,7 +159,6 @@ app.post('/twilio/sms', async (req, res) => {
   }
 });
 
-// (optional) Twilio Voice webhook placeholder — safe no-op
 app.post('/twilio/voice', (req, res) => {
   const twiml = new TwilioTwiML.VoiceResponse();
   twiml.say('Thanks for calling. Please text us your details and we will get back to you shortly.');
@@ -98,4 +166,5 @@ app.post('/twilio/voice', (req, res) => {
   res.type('text/xml').status(200).send(twiml.toString());
 });
 
-app.listen(PORT, () => console.log('Sophia Voice listening on', PORT));
+/* ─────────────────────── Start server ─────────────────────── */
+app.listen(PORT, () => console.log('Sophia backend running on port ' + PORT));
